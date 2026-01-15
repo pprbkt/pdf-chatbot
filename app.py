@@ -55,24 +55,59 @@ else:
 # Streamlit UI setup
 st.set_page_config(page_title="PDF Chatbot with History", layout="wide")
 
-# Clean, minimal styling
+# Clean, minimal styling with Custom CSS
 st.markdown("""
 <style>
-    /* Clean, minimal styling */
-    .stButton > button {
-        border-radius: 4px;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+    
+    html, body, [class*="css"]  {
+        font-family: 'Inter', sans-serif;
     }
     
-    /* Simple code blocks for sources */
+    /* Chat bubbles */
+    .stChatMessage {
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 10px;
+    }
+    
+    /* User message background */
+    [data-testid="stChatMessage"]:nth-child(odd) {
+        background-color: #f0f2f6; 
+    }
+    
+    /* Assistant message background */
+    [data-testid="stChatMessage"]:nth-child(even) {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+    }
+
+    /* Sidebar polish */
+    [data-testid="stSidebar"] {
+        background-color: #f8f9fa;
+        border-right: 1px solid #e0e0e0;
+    }
+    
+    /* Code blocks */
     code {
-        padding: 2px 5px;
-        background-color: #f0f0f0;
-        border-radius: 3px;
+        color: #d63384;
+        background-color: #f8f9fa;
+        padding: 2px 4px;
+        border-radius: 4px;
+        border: 1px solid #e9ecef;
+    }
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        font-weight: 600;
+        color: #495057;
+        background-color: #ffffff;
     }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("📚 PDF Chatbot")
+st.caption("Chat with your documents using advanced LLMs")
 
 # Ensure translate_text function is defined and accessible
 def translate_text(text, target_language="en"):
@@ -115,26 +150,25 @@ if uploaded_files:
 
 # PDF preview/thumbnail display
 if uploaded_files:
-    st.markdown("### 📄 PDF Previews")
-    
-    cols = st.columns(min(3, len(uploaded_files)))
-    
-    for i, uploaded_file in enumerate(uploaded_files):
-        if uploaded_file.name not in st.session_state:
-            st.session_state[uploaded_file.name] = uploaded_file.read()
+    with st.expander("📄 View PDF Previews", expanded=False):
+        cols = st.columns(min(3, len(uploaded_files)))
+        
+        for i, uploaded_file in enumerate(uploaded_files):
+            if uploaded_file.name not in st.session_state:
+                st.session_state[uploaded_file.name] = uploaded_file.read()
 
-        file_content = st.session_state[uploaded_file.name]
-        if file_content:  # Ensure the file is not empty
-            with cols[i % 3]:
-                doc = fitz.open(stream=file_content, filetype="pdf")
-                first_page = doc[0]
-                pix = first_page.get_pixmap(dpi=100)
-                img = Image.open(io.BytesIO(pix.tobytes("png")))
-                st.image(img, caption=uploaded_file.name, use_container_width=True)
-                st.caption(f"{doc.page_count} pages | {uploaded_file.size//1024} KB")
-        else:
-            with cols[i % 3]:
-                st.warning(f"The file {uploaded_file.name} is empty and cannot be processed.")
+            file_content = st.session_state[uploaded_file.name]
+            if file_content:  # Ensure the file is not empty
+                with cols[i % 3]:
+                    doc = fitz.open(stream=file_content, filetype="pdf")
+                    first_page = doc[0]
+                    pix = first_page.get_pixmap(dpi=150)
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    st.image(img, caption=uploaded_file.name, width="stretch") # Fixed deprecation
+                    st.caption(f"{doc.page_count} pages | {uploaded_file.size//1024} KB")
+            else:
+                with cols[i % 3]:
+                    st.warning(f"File {uploaded_file.name} is empty.")
 
 # Sidebar plugin system
 st.sidebar.title("Settings")
@@ -177,7 +211,7 @@ elif llm_provider == "OpenRouter":
     api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         api_key = st.sidebar.text_input("OpenRouter API Key", type="password", key="openrouter_key")
-    model_name = st.sidebar.text_input("Model Name", value="openai/gpt-3.5-turbo", key="openrouter_model")
+    model_name = st.sidebar.text_input("Model Name", value="openai/gpt-3.5-turbo", key="openrouter_model", help="e.g., anthropic/claude-3-opus, google/gemini-pro")
 
 elif llm_provider == "Custom (OpenAI Compatible)":
     api_key = st.sidebar.text_input("API Key", type="password", key="custom_key")
@@ -185,12 +219,31 @@ elif llm_provider == "Custom (OpenAI Compatible)":
     model_name = st.sidebar.text_input("Model Name", value="deepseek-chat", key="custom_model")
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("Actions")
+if st.session_state.history:
+    # Export chat history
+    history_text = ""
+    for i, entry in enumerate(st.session_state.history, start=1):
+        history_text += f"Q{i}: {entry['question']}\n"
+        history_text += f"A{i}: {entry['answer']}\n"
+        for src, pg in entry['sources']:
+            history_text += f"Source: {src} - Page {pg}\n"
+        history_text += "---\n"
+    
+    st.sidebar.download_button(
+        label="📥 Download Chat History",
+        data=history_text,
+        file_name="chat_history.txt",
+        mime="text/plain",
+        key="download_button"
+    )
+
+st.sidebar.markdown("---")
 st.sidebar.subheader("Plugin Settings")
 ocr_enabled = st.sidebar.checkbox("Enable OCR", value=True, key="ocr_toggle")
 translation_enabled = st.sidebar.checkbox("Enable Translation", value=False, key="translation_toggle")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Powered by Mistral AI")
 
 # Process PDFs only once
 if st.session_state.saved_files and not st.session_state.processed:
@@ -275,47 +328,54 @@ if st.session_state.vectorstore:
         # Don't show warning here again to avoid clutter, or show if missing
         pass 
 
-# Text input
-question = st.text_input("Ask your question:")
+# --- Chat Interface ---
 
-# Prevent duplicate answering
-if question and question != st.session_state.last_question:
-    st.session_state.last_question = question
-
-    with st.spinner("🤖 Answering with memory..."):
-        result = st.session_state.chain.invoke({"question": question})
-        st.session_state.history.append({
-            "question": question,
-            "answer": result["answer"],
-            "sources": [(doc.metadata.get("source", "Unknown"), doc.metadata.get("page", "?")) for doc in result["source_documents"]]
-        })
-
-# Display history
+# 1. Display Chat History First
 if st.session_state.history:
-    st.markdown("### 🔄 Chat History")
+    for entry in st.session_state.history:
+        # User Question
+        with st.chat_message("user"):
+            st.markdown(entry['question'])
+        
+        # AI Answer
+        with st.chat_message("assistant"):
+            st.markdown(entry['answer'])
+            # Sources Expander
+            with st.expander("📚 View Sources"):
+                for src, pg in entry["sources"]:
+                    st.markdown(f"- **{src}** (Page {pg})")
+
+# 2. Chat Input
+if question := st.chat_input("Ask a question about your documents..."):
+    # Display user message immediately
+    with st.chat_message("user"):
+        st.markdown(question)
     
-    for i, entry in enumerate(reversed(st.session_state.history), start=1):
-        st.markdown(f"**Q{i}:** {entry['question']}")
-        st.markdown(f"**A{i}:** {entry['answer']}")
-        
-        for src, pg in entry["sources"]:
-            st.markdown(f"📄 `{src} - Page {pg}`")
-        
-        st.markdown("---")
+    # Process only if not duplicate (or allow duplicates for chat feel, usually preferred)
+    if st.session_state.chain:
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    result = st.session_state.chain.invoke({"question": question})
+                    answer = result["answer"]
+                    sources = [(doc.metadata.get("source", "Unknown"), doc.metadata.get("page", "?")) for doc in result["source_documents"]]
+                    
+                    st.markdown(answer)
+                    with st.expander("📚 View Sources"):
+                        for src, pg in sources:
+                            st.markdown(f"- **{src}** (Page {pg})")
+                    
+                    # Save to history
+                    st.session_state.history.append({
+                        "question": question,
+                        "answer": answer,
+                        "sources": sources
+                    })
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+    else:
+        st.warning("Please upload and process PDFs first.")
 
-    # Export chat history
-    history_text = ""
-    for i, entry in enumerate(st.session_state.history, start=1):
-        history_text += f"Q{i}: {entry['question']}\n"
-        history_text += f"A{i}: {entry['answer']}\n"
-        for src, pg in entry["sources"]:
-            history_text += f"Source: {src} - Page {pg}\n"
-        history_text += "---\n"
-
-    st.download_button(
-        label="Download Chat History",
-        data=history_text,
-        file_name="chat_history.txt",
-        mime="text/plain",
-        key="download_button"
-    )
+# Clean up old session state if needed or handle resets
+if not st.session_state.history and not st.session_state.saved_files:
+     st.info("👋 Upload some PDFs to get started!")
