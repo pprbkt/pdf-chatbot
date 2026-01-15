@@ -6,16 +6,51 @@ import io
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import CharacterTextSplitter
-from langchain_groq import ChatGroq  # <-- add this import
+from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.docstore.document import Document
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from deep_translator import GoogleTranslator
 
+# Helper to Initialize LLM
+def get_llm(provider, api_key, base_url=None, model_name=None):
+    try:
+        if provider == "Groq":
+            return ChatGroq(groq_api_key=api_key, model_name="llama3-8b-8192")
+        elif provider == "OpenAI":
+            return ChatOpenAI(openai_api_key=api_key, model_name="gpt-4o")
+        elif provider == "Google Gemini":
+            return ChatGoogleGenerativeAI(google_api_key=api_key, model="gemini-1.5-flash")
+        elif provider == "OpenRouter":
+            return ChatOpenAI(
+                openai_api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                model_name=model_name,
+                default_headers={"HTTP-Referer": "https://localhost:8501", "X-Title": "PDF Chatbot"}
+            )
+        elif provider == "Custom (OpenAI Compatible)":
+             # For custom OpenAI compatible endpoints, we need to be careful.
+             # If using deepseek or others, they might need openai_api_base instead of base_url in some versions,
+             # but langchain_openai uses base_url.
+            return ChatOpenAI(openai_api_key=api_key, base_url=base_url, model_name=model_name)
+    except Exception as e:
+        st.error(f"Error initializing LLM: {e}")
+        return None
+    return None
+
 # 📌 Tesseract path
-# Set Tesseract path dynamically for Streamlit Cloud
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"  # Set Tesseract path for Streamlit Cloud
+import shutil
+import os
+
+# Check if Tesseract is available
+tesseract_path = shutil.which("tesseract")
+if tesseract_path:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_path
+else:
+    st.warning("⚠️ Tesseract OCR not found. OCR features will be disabled.")
 
 # Streamlit UI setup
 st.set_page_config(page_title="PDF Chatbot with History", layout="wide")
@@ -102,7 +137,55 @@ if uploaded_files:
                 st.warning(f"The file {uploaded_file.name} is empty and cannot be processed.")
 
 # Sidebar plugin system
-st.sidebar.title("Plugin Settings")
+st.sidebar.title("Settings")
+# LLM Provider Selection
+llm_provider = st.sidebar.selectbox(
+    "LLM Provider",
+    ["Groq", "OpenAI", "Google Gemini", "OpenRouter", "Custom (OpenAI Compatible)"],
+    key="llm_provider"
+)
+
+# Authentication Logic (Always Persistent)
+api_key = None
+base_url = None
+model_name = None
+
+if llm_provider == "Groq":
+    try: api_key = st.secrets.get("GROQ_API_KEY")
+    except: api_key = None
+    api_key = api_key or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        api_key = st.sidebar.text_input("Groq API Key", type="password", key="groq_key")
+
+elif llm_provider == "OpenAI":
+    try: api_key = st.secrets.get("OPENAI_API_KEY")
+    except: api_key = None
+    api_key = api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        api_key = st.sidebar.text_input("OpenAI API Key", type="password", key="openai_key")
+
+elif llm_provider == "Google Gemini":
+    try: api_key = st.secrets.get("GOOGLE_API_KEY")
+    except: api_key = None
+    api_key = api_key or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        api_key = st.sidebar.text_input("Google API Key", type="password", key="google_key")
+
+elif llm_provider == "OpenRouter":
+    try: api_key = st.secrets.get("OPENROUTER_API_KEY")
+    except: api_key = None
+    api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        api_key = st.sidebar.text_input("OpenRouter API Key", type="password", key="openrouter_key")
+    model_name = st.sidebar.text_input("Model Name", value="openai/gpt-3.5-turbo", key="openrouter_model")
+
+elif llm_provider == "Custom (OpenAI Compatible)":
+    api_key = st.sidebar.text_input("API Key", type="password", key="custom_key")
+    base_url = st.sidebar.text_input("Base URL", value="https://api.deepseek.com", key="custom_base")
+    model_name = st.sidebar.text_input("Model Name", value="deepseek-chat", key="custom_model")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Plugin Settings")
 ocr_enabled = st.sidebar.checkbox("Enable OCR", value=True, key="ocr_toggle")
 translation_enabled = st.sidebar.checkbox("Enable Translation", value=False, key="translation_toggle")
 
@@ -127,12 +210,16 @@ if st.session_state.saved_files and not st.session_state.processed:
                     text = page.get_text()
                     if text.strip():
                         content = text
-                    elif ocr_enabled:  # Apply OCR only if enabled
-                        pix = page.get_pixmap(dpi=300)
-                        img = Image.open(io.BytesIO(pix.tobytes("png")))
-                        content = pytesseract.image_to_string(img)
+                    elif ocr_enabled and tesseract_path:  # Apply OCR only if enabled and available
+                        try:
+                            pix = page.get_pixmap(dpi=300)
+                            img = Image.open(io.BytesIO(pix.tobytes("png")))
+                            content = pytesseract.image_to_string(img)
+                        except Exception as e:
+                            st.warning(f"OCR failed for {uploaded_file.name}: {e}")
+                            content = ""
                     else:
-                        content = ""  # Skip OCR if disabled
+                        content = ""  # Skip OCR if disabled or missing
 
                     if translation_enabled and content.strip():
                         content = translate_text(content)  # Apply translation if enabled
@@ -156,28 +243,37 @@ if st.session_state.saved_files and not st.session_state.processed:
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         st.session_state.vectorstore = FAISS.from_documents(split_docs, embedding=embeddings)
 
-    # Use Groq LLM
-    llm = ChatGroq(
-        groq_api_key=st.secrets["GROQ_API_KEY"],
-        model_name="llama3-8b-8192"  # or "mixtral-8x7b-32768" for larger model
-    )
-    st.session_state.chain = load_qa_chain(llm, chain_type="stuff")
-    st.session_state.processed = True
-    st.success("✅ PDFs processed!")
+    # Initialize LLM based on provider
+    llm = get_llm(llm_provider, api_key, base_url, model_name)
+    
+    if llm:
+        st.write(f"DEBUG: Initialized LLM with Provider: {llm_provider}")
+        if llm_provider == "Custom (OpenAI Compatible)":
+             st.write(f"DEBUG: Base URL: {base_url}, Model: {model_name}")
+        elif llm_provider == "OpenRouter":
+             st.write(f"DEBUG: Model: {model_name}")
+        st.session_state.chain = load_qa_chain(llm, chain_type="stuff")
+        st.session_state.processed = True
+        st.success(f"✅ PDFs processed with {llm_provider}!")
+    else:
+        st.warning(f"Please configure {llm_provider} settings in the sidebar to proceed.")
 
 # Update chain to use ConversationalRetrievalChain with explicit output key
 if st.session_state.vectorstore:
-    llm = ChatGroq(
-        groq_api_key=st.secrets["GROQ_API_KEY"],
-        model_name="llama3-8b-8192"
-    )
-    st.session_state.chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=st.session_state.vectorstore.as_retriever(),
-        memory=st.session_state.memory,
-        return_source_documents=True,  # Ensure source documents are included in the result
-        output_key="answer"  # Explicitly set the output key for memory
-    )
+    # Re-initialize LLM ensuring we use the same config
+    llm = get_llm(llm_provider, api_key, base_url, model_name)
+
+    if llm:
+        st.session_state.chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=st.session_state.vectorstore.as_retriever(),
+            memory=st.session_state.memory,
+            return_source_documents=True,
+            output_key="answer"
+        )
+    else:
+        # Don't show warning here again to avoid clutter, or show if missing
+        pass 
 
 # Text input
 question = st.text_input("Ask your question:")
@@ -187,7 +283,7 @@ if question and question != st.session_state.last_question:
     st.session_state.last_question = question
 
     with st.spinner("🤖 Answering with memory..."):
-        result = st.session_state.chain({"question": question})
+        result = st.session_state.chain.invoke({"question": question})
         st.session_state.history.append({
             "question": question,
             "answer": result["answer"],

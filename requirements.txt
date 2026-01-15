@@ -11,3 +11,5 @@ deep-translator
 huggingface_hub==0.20.3
 transformers
 langchain-groq
+langchain-openai
+langchain-google-genai
